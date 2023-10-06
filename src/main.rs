@@ -37,6 +37,11 @@ struct DiskConfig {
     size: u64,
 }
 
+pub struct Partition {
+    pub data: Box<dyn Read>,
+    pub size: u64,
+}
+
 #[derive(Parser, Debug)]
 struct Cli {
     #[clap(short, long, default_value = "ds2img.toml")]
@@ -48,66 +53,35 @@ struct Cli {
     output: String,
 }
 
-pub struct Partition {
-    pub data: Box<dyn Read>,
-    pub size: u64,
-}
-
 fn main() {
     env_logger::init();
-    // write_fat();
-    write_ext4();
-}
-
-fn write_ext4() {
     let cli = Cli::parse();
     let config: ConfigToml =
         toml::de::from_str(std::fs::read_to_string(cli.config).unwrap().as_str()).unwrap();
 
-    // Build the raw partition data
-    info!("Building partitions");
-    let mut ext4_partition = ext4::build_partition(&config.partitions[0]).unwrap();
-    debug!("part size: {} bytes", ext4_partition.size);
+    let partitions = config
+        .partitions
+        .iter()
+        .map(|p| {
+            dbg!(&p.name);
+            dbg!(&p.path);
+            dbg!(&p.format);
+            match p.format.as_str() {
+                "fat32" => fat32::build_partition(p).unwrap(),
+                "ext4" => ext4::build_partition(p).unwrap(),
+                _ => unreachable!(),
+            }
+        })
+        .collect::<Vec<_>>();
 
-    write_partition(&mut ext4_partition, &cli.output);
+    write_partitions(partitions, &cli.output);
 }
 
-fn write_fat() {
-    let cli = Cli::parse();
-    let config: ConfigToml =
-        toml::de::from_str(std::fs::read_to_string(cli.config).unwrap().as_str()).unwrap();
-
-    // Build the raw partition data
-    info!("Building partitions");
-    let mut fat_partition = fat32::build_partition(&config.partitions[0]).unwrap();
-    debug!("part size: {} bytes", fat_partition.size);
-
-    write_partition(&mut fat_partition, &cli.output);
-}
-
-fn write_partition(partition: &mut Partition, output: &String) {
-    // Partition + MBR size
-    // let total_size = fat_partition.size + (1024 * 50);
-    let total_size = partition.size + 0x20000;
-    debug!("file size: {}", total_size);
-
-    // Set up the file to hold the disk image
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .read(true)
-        .open(output)
-        .unwrap();
-
-    file.set_len(total_size).unwrap();
-    let mut mem_device = Box::new(file);
-
+fn init_gpt(mem_device: &mut Box<File>, total_size: u64) -> GptDisk {
     // Set up the MBR
     let mbr_size = u32::try_from((total_size / 512) - 1).unwrap_or(0xFF_FF_FF_FF);
     let mbr = gpt::mbr::ProtectiveMBR::with_lb_size(mbr_size);
-
-    mbr.overwrite_lba0(&mut mem_device)
-        .expect("failed to write MBR");
+    mbr.overwrite_lba0(mem_device).expect("failed to write MBR");
 
     // Set up the GPT
     let mut gdisk = gpt::GptConfig::default()
@@ -122,30 +96,67 @@ fn write_partition(partition: &mut Partition, output: &String) {
         .update_partitions(std::collections::BTreeMap::<u32, gpt::partition::Partition>::new())
         .unwrap();
 
-    // Add the partition
-    let part = gdisk
-        .add_partition(
-            "test_name",
-            partition.size,
-            gpt::partition_types::EFI,
-            0,
-            None,
-        )
+    gdisk
+}
+
+fn write_partitions(partitions: Vec<Partition>, output: &String) {
+    // Partition + MBR size
+    let total_size = partitions.iter().map(|p| p.size).sum::<u64>() + 0x20000;
+    debug!("file size: {}", total_size);
+
+    // Set up the file to hold the disk image
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .read(true)
+        .open(output)
         .unwrap();
 
-    // Get the partition offsets
-    let part = gdisk.partitions().get(&part).unwrap();
+    file.set_len(total_size).unwrap();
+    let mut mem_device = Box::new(file);
+
+    // Set up the partition table
+    let mut gdisk = init_gpt(&mut mem_device, total_size);
+
+    partitions.iter().enumerate().for_each(|(idx, p)| {
+        println!("Writing partition {} with size {} bytes", idx, p.size);
+        gdisk
+            .add_partition(
+                &format!("test_name{idx}"),
+                p.size,
+                gpt::partition_types::EFI,
+                0,
+                None,
+            )
+            .unwrap();
+    });
 
     let lb_size = gdisk.logical_block_size();
-    let part_start = part.bytes_start(*lb_size).unwrap();
-    let part_len = part.bytes_len(*lb_size).unwrap();
+
+    // Copy the data
+    let data = gdisk
+        .partitions()
+        .iter()
+        .map(|p| p.1)
+        .zip(partitions)
+        .map(|(part, cfg)| {
+            let start = part.bytes_start(*lb_size).unwrap();
+            let len = part.bytes_len(*lb_size).unwrap();
+            let data = cfg.data;
+
+            (start, len, data)
+        })
+        .collect::<Vec<_>>();
 
     // Write the image to disk
     let mut file = gdisk.write().unwrap();
 
     // Write the partition data in to place
-    let mut fat_slice =
-        fscommon::StreamSlice::new(file, part_start, part_start + part_len).unwrap();
+    data.into_iter()
+        .for_each(|(part_start, part_len, mut data)| {
+            let mut fat_slice =
+                fscommon::StreamSlice::new(&mut file, part_start, part_start + part_len).unwrap();
 
-    std::io::copy(&mut partition.data, &mut fat_slice).unwrap();
+            std::io::copy(&mut data, &mut fat_slice).unwrap();
+        })
 }

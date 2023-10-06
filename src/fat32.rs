@@ -62,24 +62,26 @@ fn estimate_size(input_dir: &Path) -> u64 {
 
     let alignment = size % FAT_BYTES_PER_SECTOR;
 
-    if alignment != 0 {
+    let size = if alignment != 0 {
         size + FAT_BYTES_PER_SECTOR - alignment
     } else {
         size
-    }
+    };
+
+    std::cmp::max(size, 1024 * 1024)
 }
 
 pub fn build_partition(partition: &PartitionConfig) -> Result<Partition, ()> {
-    let size = estimate_size(&PathBuf::from(&partition.path));
-    debug!("estimated size: {} bytes", size);
-
     let mut file: Vec<u8> = vec![0u8; 0];
 
     let part_start = 0;
-    let part_len = 1024 * 100;
+    let part_len = estimate_size(&PathBuf::from(&partition.path));
+    debug!("estimated size: {} bytes", part_len);
 
     let cursor = Cursor::new(&mut file);
 
+    dbg!(part_start);
+    dbg!(part_start + part_len);
     let mut fat_slice =
         fscommon::StreamSlice::new(cursor, part_start, part_start + part_len).unwrap();
 
@@ -108,19 +110,23 @@ pub fn build_partition(partition: &PartitionConfig) -> Result<Partition, ()> {
             .for_each(|entry| {
                 let metadata = entry.metadata().unwrap();
                 let path = entry.path();
-                let name = path.file_name().unwrap().to_str().unwrap();
+                let name = path
+                    .to_str()
+                    .unwrap()
+                    .strip_prefix(&partition.path)
+                    .unwrap();
                 if metadata.is_dir() {
                     debug!("DIR: {name}");
-                    root_dir.create_dir(name);
+                    root_dir.create_dir(name).unwrap();
                 } else {
                     count += 1;
-                    debug!("FILE {count}: {name}");
+                    debug!("FILE {count}: {}", name);
+
                     let mut orig_file = File::open(path).unwrap();
                     let mut file = root_dir.create_file(name).unwrap();
                     std::io::copy(&mut orig_file, &mut file).unwrap();
                 }
             });
-        // fs.unmount().unwrap();
     }
 
     Ok(Partition {

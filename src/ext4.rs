@@ -10,13 +10,15 @@ const BLOCK_COUNT: u64 = 1024;
 
 pub fn build_partition(partition: &PartitionConfig) -> Result<Partition, ()> {
     let size = estimate_size(&partition.path).unwrap();
+    println!("estimated size: {size} bytes");
+
+    // Create the file and set the size for `mke2fs`
     {
         let img = File::create("ext4.img").unwrap();
         img.set_len(size).unwrap();
     }
 
-    // mke2fs -d dir -t ext4 ./rust.img
-
+    // Don't have a crate like `fatfs` for ext4, so just using `mke2fs` for now
     Command::new("mke2fs")
         .arg("-d")
         .arg(&partition.path)
