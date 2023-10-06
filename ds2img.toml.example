@@ -1,0 +1,18 @@
+# Config file is not stable or fully used, this is
+# just an example of what it may look like when finished.
+
+[disk]
+size = 65536
+
+[[partition]]
+name = "test1"
+path = "./disk/"
+format = "fat32"
+size = 2560
+
+[[partition]]
+name = "test2"
+path = "./disk/"
+format = "ext4"
+
+# vim: ft=toml
