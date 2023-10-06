@@ -1,4 +1,4 @@
-use std::{error, fs::File};
+use std::{error, fs::File, process::Command};
 use std::{io::Cursor, path::Path};
 
 use walkdir::WalkDir;
@@ -10,15 +10,28 @@ const BLOCK_COUNT: u64 = 1024;
 
 pub fn build_partition(partition: &PartitionConfig) -> Result<Partition, ()> {
     let size = estimate_size(&partition.path).unwrap();
-    let img = File::create("rust.img").unwrap();
-    img.set_len(size).unwrap();
+    {
+        let img = File::create("ext4.img").unwrap();
+        img.set_len(size).unwrap();
+    }
 
-    let p = Partition {
+    // mke2fs -d dir -t ext4 ./rust.img
+
+    Command::new("mke2fs")
+        .arg("-d")
+        .arg(&partition.path)
+        .arg("-t")
+        .arg("ext4")
+        .arg("./ext4.img")
+        .status()
+        .unwrap();
+
+    let img = File::open("ext4.img").unwrap();
+
+    Ok(Partition {
         size,
         data: Box::new(img),
-    };
-
-    todo!()
+    })
 }
 
 pub fn estimate_size(input_dir: impl AsRef<Path>) -> Result<u64, Box<dyn error::Error>> {
@@ -31,16 +44,18 @@ pub fn estimate_size(input_dir: impl AsRef<Path>) -> Result<u64, Box<dyn error::
             .sum::<u64>();
 
         let journal_size = BLOCK_SIZE * BLOCK_COUNT;
-        // let multiple = size + 1024 - (size % 1024);
         let size = contents_size + journal_size;
-
         let alignment = size % 1024;
 
-        if alignment != 0 {
+        let size = if alignment != 0 {
             size + 1024 - alignment
         } else {
             size
-        }
+        };
+
+        // Need at least 2MiB for journal
+        let two_mib = 1024 * 1024 * 2;
+        std::cmp::max(size, two_mib)
     })
 }
 

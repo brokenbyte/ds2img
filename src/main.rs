@@ -55,7 +55,21 @@ pub struct Partition {
 
 fn main() {
     env_logger::init();
-    write_fat();
+    // write_fat();
+    write_ext4();
+}
+
+fn write_ext4() {
+    let cli = Cli::parse();
+    let config: ConfigToml =
+        toml::de::from_str(std::fs::read_to_string(cli.config).unwrap().as_str()).unwrap();
+
+    // Build the raw partition data
+    info!("Building partitions");
+    let mut ext4_partition = ext4::build_partition(&config.partitions[0]).unwrap();
+    debug!("part size: {} bytes", ext4_partition.size);
+
+    write_partition(&mut ext4_partition, &cli.output);
 }
 
 fn write_fat() {
@@ -68,9 +82,13 @@ fn write_fat() {
     let mut fat_partition = fat32::build_partition(&config.partitions[0]).unwrap();
     debug!("part size: {} bytes", fat_partition.size);
 
+    write_partition(&mut fat_partition, &cli.output);
+}
+
+fn write_partition(partition: &mut Partition, output: &String) {
     // Partition + MBR size
     // let total_size = fat_partition.size + (1024 * 50);
-    let total_size = fat_partition.size + 0x20000;
+    let total_size = partition.size + 0x20000;
     debug!("file size: {}", total_size);
 
     // Set up the file to hold the disk image
@@ -78,7 +96,7 @@ fn write_fat() {
         .create(true)
         .write(true)
         .read(true)
-        .open(cli.output)
+        .open(output)
         .unwrap();
 
     file.set_len(total_size).unwrap();
@@ -107,8 +125,8 @@ fn write_fat() {
     // Add the partition
     let part = gdisk
         .add_partition(
-            &config.partitions[0].name,
-            fat_partition.size,
+            "test_name",
+            partition.size,
             gpt::partition_types::EFI,
             0,
             None,
@@ -129,5 +147,5 @@ fn write_fat() {
     let mut fat_slice =
         fscommon::StreamSlice::new(file, part_start, part_start + part_len).unwrap();
 
-    std::io::copy(&mut fat_partition.data, &mut fat_slice).unwrap();
+    std::io::copy(&mut partition.data, &mut fat_slice).unwrap();
 }
